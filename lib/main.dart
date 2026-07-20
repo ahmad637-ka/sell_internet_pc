@@ -1,15 +1,12 @@
 // ============================================================
 // sell_internet_pc.dart  (yeh code lib/main.dart mein daalo)
 //
-// Windows mini-app: Login (Firebase Auth REST API) + "Start Earning"
-// button. Ab is version mein:
-//   1) Persistent login (auto-login via refreshToken)
-//   2) Persistent earning state — agar app band karne se pehle
-//      "Start Earning" ON tha, to app dobara khulte hi khud-ba-khud
-//      phir se ON ho jayega.
-//
-// IMPORTANT: Window title bar text "windows/runner/main.cpp" mein
-// L"sell_internet_pc" ko L"Sell Internet" se replace karna na bhulo.
+// FIX: Ab session.json aur bright_status.txt files EXE ke apne
+// folder ke hisaab se dhundi/banayi jati hain (Platform.resolvedExecutable
+// use karke), na ke "current working directory" ke hisaab se. Pehle
+// wale version mein jab app shortcut se khulti thi, working directory
+// kabhi kabhi app folder nahi hota tha, is liye bright_status.txt
+// nahi milti thi aur hamesha "disabled" dikhta tha — ab yeh fix ho gaya.
 //
 // ZAROORI SETUP (pubspec.yaml mein yeh hona chahiye):
 //
@@ -35,15 +32,40 @@ const String kDatabaseUrl =
 const int kEarningTickSeconds = 300; // har 5 minute
 const int kCoinsPerTick = 1;
 const String kSessionFileName = 'session.json';
+const String kBrightStatusFileName = 'bright_status.txt';
+
+// ── FIX: exe ka apna folder path nikalo, chahe app kahin se bhi
+// launch ho (shortcut, double-click, cmd) — hamesha sahi jagah
+// milegi files ke liye ──
+String get _appDir => File(Platform.resolvedExecutable).parent.path;
+
+File _appFile(String name) => File('$_appDir${Platform.pathSeparator}$name');
 
 void logMessage(String message) {
   try {
-    final logFile = File('crash_log.txt');
+    final logFile = _appFile('crash_log.txt');
     logFile.writeAsStringSync(
       '${DateTime.now()}: $message\n\n',
       mode: FileMode.append,
     );
   } catch (_) {}
+}
+
+// ── Bright VPN offer ka status check karo (installer ne save kiya) ──
+bool isBrightVpnAccepted() {
+  try {
+    final file = _appFile(kBrightStatusFileName);
+    if (!file.existsSync()) {
+      logMessage('bright_status.txt NOT FOUND at: ${file.path}');
+      return false;
+    }
+    final content = file.readAsStringSync().trim().toLowerCase();
+    logMessage('bright_status.txt found at ${file.path}, content: "$content"');
+    return content == 'accepted';
+  } catch (e) {
+    logMessage('isBrightVpnAccepted check failed: $e');
+    return false;
+  }
 }
 
 Future<void> main() async {
@@ -55,7 +77,7 @@ Future<void> main() async {
       FlutterError.presentError(details);
     };
 
-    logMessage('App starting...');
+    logMessage('App starting... appDir=$_appDir');
     runApp(const SellInternetApp());
   }, (error, stack) {
     logMessage('Uncaught zone error: $error\n$stack');
@@ -80,9 +102,8 @@ class SessionData {
 }
 
 class SessionStorage {
-  static File get _file => File(kSessionFileName);
+  static File get _file => _appFile(kSessionFileName);
 
-  // Poori session save karo (login ke waqt use hota hai)
   static Future<void> save({
     required String uid,
     required String refreshToken,
@@ -103,7 +124,6 @@ class SessionStorage {
     }
   }
 
-  // Sirf earning ON/OFF flag update karo, baaki data waisa hi rahega
   static Future<void> updateEarningState(bool isEarning) async {
     try {
       final session = await load();
@@ -119,7 +139,6 @@ class SessionStorage {
     }
   }
 
-  // Refresh token update hone par (naya token) sirf token update karo
   static Future<void> updateTokens(String uid, String refreshToken, String email) async {
     final session = await load();
     await save(
@@ -319,7 +338,6 @@ class _SessionGateState extends State<SessionGate> {
       final String uid = result['user_id'];
       final String email = session.email;
 
-      // Naya token save karo, purana isEarning flag bhi wahi rakho
       await SessionStorage.save(
         uid: uid,
         refreshToken: newRefreshToken,
@@ -403,7 +421,6 @@ class _LoginPageState extends State<LoginPage> {
       final String uid = result['localId'];
       final String userEmail = result['email'] ?? email;
 
-      // Naya login → earning state hamesha false se shuru hoga
       await SessionStorage.save(
         uid: uid,
         refreshToken: refreshToken,
@@ -540,8 +557,6 @@ class EarnHomePage extends StatefulWidget {
   final String idToken;
   final String refreshToken;
   final String email;
-  // Agar pichli session mein earning ON thi, to yeh true hoga aur
-  // page khulte hi khud-ba-khud earning shuru ho jayegi
   final bool resumeEarning;
 
   const EarnHomePage({
@@ -565,16 +580,21 @@ class _EarnHomePageState extends State<EarnHomePage> {
 
   late String _idToken;
   late String _refreshToken;
+  late bool _brightAccepted;
 
   @override
   void initState() {
     super.initState();
     _idToken = widget.idToken;
     _refreshToken = widget.refreshToken;
+    _brightAccepted = isBrightVpnAccepted();
 
-    // ── Agar pichli baar earning ON chhori thi, to yahan khud-ba-khud
-    // dobara start kar do, taake user ko dobara button dabana na pade ──
-    if (widget.resumeEarning) {
+    if (!_brightAccepted) {
+      _statusText =
+          '⚠️ Earning is disabled. Please reinstall the app and select "Accept - Install Bright VPN" during setup to start earning.';
+    }
+
+    if (_brightAccepted && widget.resumeEarning) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _startEarning(showResumeMessage: true);
       });
@@ -582,6 +602,8 @@ class _EarnHomePageState extends State<EarnHomePage> {
   }
 
   void _toggleEarning() {
+    if (!_brightAccepted) return;
+
     if (_isEarning) {
       _stopEarning();
     } else {
@@ -597,7 +619,6 @@ class _EarnHomePageState extends State<EarnHomePage> {
           : '🟢 Earning shuru ho gayi... internet share ho raha hai.';
     });
 
-    // Session file mein bhi save karo taake app band/khulne pe yaad rahe
     SessionStorage.updateEarningState(true);
 
     // TODO: Bright SDK start() yahan call hoga
@@ -612,7 +633,6 @@ class _EarnHomePageState extends State<EarnHomePage> {
     _earningTimer?.cancel();
     _earningTimer = null;
 
-    // Session file mein bhi OFF save karo
     SessionStorage.updateEarningState(false);
 
     // TODO: Bright SDK stop() yahan call hoga
@@ -687,7 +707,6 @@ class _EarnHomePageState extends State<EarnHomePage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    // ── Top bar: title + logout ──
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -725,44 +744,59 @@ class _EarnHomePageState extends State<EarnHomePage> {
 
                     const SizedBox(height: 56),
 
-                    // ── Start/Stop earning circle ──
                     GestureDetector(
                       onTap: _toggleEarning,
-                      child: Container(
-                        width: 190,
-                        height: 190,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: LinearGradient(
-                            colors: _isEarning
-                                ? [Colors.redAccent, Colors.red.shade900]
-                                : [const Color(0xFF6C47FF), const Color(0xFFA855F7)],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: (_isEarning ? Colors.red : const Color(0xFF6C47FF))
-                                  .withOpacity(0.45),
-                              blurRadius: 36,
-                              spreadRadius: 6,
+                      child: Opacity(
+                        opacity: _brightAccepted ? 1.0 : 0.4,
+                        child: Container(
+                          width: 190,
+                          height: 190,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              colors: _isEarning
+                                  ? [Colors.redAccent, Colors.red.shade900]
+                                  : [const Color(0xFF6C47FF), const Color(0xFFA855F7)],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
                             ),
-                          ],
-                        ),
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(_isEarning ? Icons.stop_circle : Icons.play_circle,
-                                  color: Colors.white, size: 46),
-                              const SizedBox(height: 10),
-                              Text(_isEarning ? 'Stop\nEarning' : 'Start\nEarning',
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 17)),
-                            ],
+                            boxShadow: _brightAccepted
+                                ? [
+                                    BoxShadow(
+                                      color: (_isEarning
+                                              ? Colors.red
+                                              : const Color(0xFF6C47FF))
+                                          .withOpacity(0.45),
+                                      blurRadius: 36,
+                                      spreadRadius: 6,
+                                    ),
+                                  ]
+                                : [],
+                          ),
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                    _brightAccepted
+                                        ? (_isEarning
+                                            ? Icons.stop_circle
+                                            : Icons.play_circle)
+                                        : Icons.lock,
+                                    color: Colors.white,
+                                    size: 46),
+                                const SizedBox(height: 10),
+                                Text(
+                                    _brightAccepted
+                                        ? (_isEarning ? 'Stop\nEarning' : 'Start\nEarning')
+                                        : 'Earning\nDisabled',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 17)),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -770,34 +804,42 @@ class _EarnHomePageState extends State<EarnHomePage> {
 
                     const SizedBox(height: 40),
 
-                    // ── Coins card ──
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.05),
-                        border: Border.all(color: Colors.white12),
+                        color: _brightAccepted
+                            ? Colors.white.withOpacity(0.05)
+                            : Colors.orange.withOpacity(0.08),
+                        border: Border.all(
+                          color: _brightAccepted ? Colors.white12 : Colors.orange.withOpacity(0.3),
+                        ),
                         borderRadius: BorderRadius.circular(16),
                       ),
                       child: Column(
                         children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Text('🪙', style: TextStyle(fontSize: 18)),
-                              const SizedBox(width: 8),
-                              Text('Is session mein kamaye: $_sessionCoins coins',
-                                  style: const TextStyle(
-                                      color: Color(0xFFFFD700),
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15)),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
+                          if (_brightAccepted)
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Text('🪙', style: TextStyle(fontSize: 18)),
+                                const SizedBox(width: 8),
+                                Text('Is session mein kamaye: $_sessionCoins coins',
+                                    style: const TextStyle(
+                                        color: Color(0xFFFFD700),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15)),
+                              ],
+                            ),
+                          if (_brightAccepted) const SizedBox(height: 12),
                           Text(_statusText,
                               textAlign: TextAlign.center,
                               style: TextStyle(
-                                  color: Colors.white.withOpacity(0.65), fontSize: 12, height: 1.4)),
+                                  color: _brightAccepted
+                                      ? Colors.white.withOpacity(0.65)
+                                      : Colors.orangeAccent,
+                                  fontSize: 12,
+                                  height: 1.4)),
                         ],
                       ),
                     ),
