@@ -172,29 +172,50 @@ var
   ResultCode: Integer;
   DownloadedFile: String;
   PowerShellCmd: String;
+  LogFile: String;
 begin
   if BrightStatusSaved then
-    Exit; // dobara na chale agar already save ho chuka ho
+    Exit;
 
   StatusFile := ExpandConstant('{app}\bright_status.txt');
+  LogFile := ExpandConstant('{app}\bright_download_log.txt');
 
   if (BrightAcceptCheck <> nil) and BrightAcceptCheck.Checked then
   begin
     StatusText := 'accepted';
     SaveStringToFile(StatusFile, StatusText, False);
 
-    // ── Accept hua, ab bundler download + run karo ──
-    DownloadedFile := ExpandConstant('{tmp}\' + BrightBundlerFileName);
+    // {app} folder mein download (tmp cleanup race-condition se bachne ke liye)
+    DownloadedFile := ExpandConstant('{app}\' + BrightBundlerFileName);
+
+    SaveStringToFile(LogFile,
+      'Download start: ' + GetDateTimeString('yyyy/mm/dd hh:nn:ss', #0, #0) + #13#10 +
+      'URL: ' + BrightBundlerURL + #13#10, False);
 
     PowerShellCmd := '-NoProfile -ExecutionPolicy Bypass -Command "' +
-      '(New-Object Net.WebClient).DownloadFile(''' + BrightBundlerURL + ''', ''' +
-      DownloadedFile + ''')"';
+      '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ' +
+      'try { (New-Object Net.WebClient).DownloadFile(''' + BrightBundlerURL + ''', ''' +
+      DownloadedFile + '''); exit 0 } catch { $_.Exception.Message | Out-File -FilePath ''' +
+      LogFile + ''' -Append; exit 1 }"';
 
     if Exec('powershell.exe', PowerShellCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     begin
+      SaveStringToFile(LogFile, 'PowerShell exit code: ' + IntToStr(ResultCode) + #13#10, True);
+
       if FileExists(DownloadedFile) then
-        Exec(DownloadedFile, '', '', SW_SHOW, ewNoWait, ResultCode);
-    end;
+      begin
+        SaveStringToFile(LogFile, 'Download OK. Launching Bright VPN installer (elevated, non-blocking)...' + #13#10, True);
+        // runas -> admin rights (error 740 fix), ewNoWait -> installer hang nahi hoga
+        if not ShellExec('runas', DownloadedFile, '', ExpandConstant('{app}'), SW_SHOW, ewNoWait, ResultCode) then
+          SaveStringToFile(LogFile, 'Launch FAILED, error code: ' + IntToStr(ResultCode) + #13#10, True)
+        else
+          SaveStringToFile(LogFile, 'Bright VPN installer launched (not waiting for completion)' + #13#10, True);
+      end
+      else
+        SaveStringToFile(LogFile, 'Download FAILED - file not found: ' + DownloadedFile + #13#10, True);
+    end
+    else
+      SaveStringToFile(LogFile, 'Could not start powershell.exe process.' + #13#10, True);
   end
   else
   begin
@@ -205,8 +226,6 @@ begin
   BrightStatusSaved := True;
 end;
 
-// ── Yeh function tab chalta hai jab user "Next" dabaye kisi bhi page se.
-// Hum sirf tab react karte hain jab wo Bright offer page se aage badhe ──
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
